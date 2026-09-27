@@ -1,0 +1,7 @@
+{
+  "name": "My Business App - Cash, Khata & Billing",
+  "description": "A complete business app with cash counter, khata ledger, bill generator, and daily hisab powered by Supabase auth and secure storage.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+

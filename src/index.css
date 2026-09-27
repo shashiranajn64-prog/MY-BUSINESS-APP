@@ -1,0 +1,22 @@
+@import "tailwindcss";
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .printable-a5, .printable-a5 * {
+    visibility: visible;
+  }
+  .printable-a5 {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 148mm;
+    min-height: 210mm;
+    padding: 10mm;
+    background: white !important;
+    color: black !important;
+    box-shadow: none !important;
+  }
+}
+
