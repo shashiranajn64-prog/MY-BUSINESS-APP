@@ -12,21 +12,32 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
+
       - name: Install dependencies
         run: npm install --legacy-peer-deps
+
       - name: Build website
         run: npm run build
+
+      - name: Install Capacitor
+        run: npm install @capacitor/core @capacitor/cli @capacitor/android --legacy-peer-deps
+
       - name: Setup Capacitor
         run: |
           rm -rf android
           rm -f capacitor.config.json
+          rm -f capacitor.config.ts
           npx cap init "My Business App" com.mybusiness.app --web-dir=dist
+
       - name: Add Android
         run: npx cap add android
+
       - name: Copy web to Android
         run: npx cap copy android
+
       - name: Build APK
         run: cd android && chmod +x gradlew &&./gradlew assembleDebug
+
       - uses: actions/upload-artifact@v4
         with:
           name: my-business-app-apk
