@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { 
   Wallet, 
@@ -92,8 +92,12 @@ export default function App() {
   const [showAddCustomer, setShowAddCustomer] = useState(false);
   const [transAmount, setTransAmount] = useState('');
   const [transNote, setTransNote] = useState('');
+  const [transDate, setTransDate] = useState(() => new Date().toISOString().slice(0, 16));
   const [transType, setTransType] = useState<'gave' | 'got'>('gave'); // gave = udhar, got = payment received
   const [khataSearch, setKhataSearch] = useState('');
+
+  // TAB 1: Cash Counter Extra/Coins State
+  const [extraCashAmount, setExtraCashAmount] = useState('');
 
   // TAB 3: Bill Generator State & Shop Details
   const [shopDetails, setShopDetails] = useState(() => {
@@ -111,20 +115,34 @@ export default function App() {
   });
   const [showShopSettings, setShowShopSettings] = useState(false);
 
-  const [billCustomerName, setBillCustomerName] = useState('Cash Customer');
+  const [billCustomerName, setBillCustomerName] = useState('');
   const [billCustomerPhone, setBillCustomerPhone] = useState('');
-  const [billItems, setBillItems] = useState<Array<{name: string, qty: number, rate: number, total: number}>>([]);
+  const [billDateTime, setBillDateTime] = useState(() => new Date().toISOString().slice(0, 16));
+  const [billItems, setBillItems] = useState<Array<{name: string, description?: string, unit?: string, qty: number, rate: number, total: number}>>([]);
   const [itemName, setItemName] = useState('');
+  const [itemDescription, setItemDescription] = useState('');
+  const [itemUnit, setItemUnit] = useState('Pcs');
   const [itemQty, setItemQty] = useState('1');
   const [itemRate, setItemRate] = useState('');
   const [discountRs, setDiscountRs] = useState('0');
+  const [taxPercent, setTaxPercent] = useState('0');
+  const [paymentMode, setPaymentMode] = useState('Cash');
+  const [billCustomNote, setBillCustomNote] = useState('');
   const [previewMode, setPreviewMode] = useState<'thermal' | 'a5'>('thermal');
-  const [currentBillNo] = useState(() => Math.floor(100000 + Math.random() * 900000));
-  
   const [savedBills, setSavedBills] = useState<any[]>(() => {
     const saved = localStorage.getItem('mb_saved_bills');
     return saved ? JSON.parse(saved) : [];
   });
+
+  const autoNextBillNo = useMemo(() => {
+    if (savedBills.length === 0) return 26001;
+    const numbers = savedBills.map(b => typeof b.bill_no === 'number' ? b.bill_no : parseInt(b.bill_no) || 26000);
+    const maxNo = Math.max(26000, ...numbers);
+    return maxNo + 1;
+  }, [savedBills]);
+
+  const [billNoInput, setBillNoInput] = useState<string>('');
+  const effectiveBillNo = billNoInput.trim() || autoNextBillNo.toString();
   const [billSearchQuery, setBillSearchQuery] = useState('');
   const [viewingBill, setViewingBill] = useState<any>(null);
 
@@ -228,7 +246,11 @@ export default function App() {
         }
       }
     } catch (err: any) {
-      setAuthError(err.message || 'Authentication mein samasya aayi.');
+      if (err.message?.includes('Email not confirmed')) {
+        setAuthError('Email not confirmed: Kripya apne Supabase Dashboard (Authentication > Providers > Email) mein jaakar "Confirm email" toggle ko OFF kar dein.');
+      } else {
+        setAuthError(err.message || 'Authentication mein samasya aayi.');
+      }
     }
   };
 
@@ -250,33 +272,56 @@ export default function App() {
     window.location.reload();
   };
 
-  // Fetch Data from Supabase with RLS user_id filter
+  // Fetch Data from Supabase with RLS user_id filter & local fallback
   const fetchAppData = async (userId: string) => {
+    // Load local storage fallback first
+    const localCusts = localStorage.getItem('mb_local_cust_' + userId);
+    if (localCusts) {
+      try { setCustomers(JSON.parse(localCusts)); } catch (e) {}
+    }
+    const localTxs = localStorage.getItem('mb_local_tx_' + userId);
+    if (localTxs) {
+      try { setTransactions(JSON.parse(localTxs)); } catch (e) {}
+    }
+    const localBills = localStorage.getItem('mb_saved_bills');
+    if (localBills) {
+      try { setSavedBills(JSON.parse(localBills)); } catch (e) {}
+    }
+
     if (!supabaseClient || supabaseUrl.includes('YOUR_PROJECT')) return;
     try {
       // Fetch Customers
-      const { data: custData } = await supabaseClient
+      const { data: custData, error: custErr } = await supabaseClient
         .from('mb_customers')
         .select('*')
         .eq('user_id', userId)
         .order('created_at', { ascending: false });
-      if (custData) setCustomers(custData);
+      if (!custErr && custData && custData.length > 0) {
+        setCustomers(custData);
+        localStorage.setItem('mb_local_cust_' + userId, JSON.stringify(custData));
+      }
 
       // Fetch Transactions
-      const { data: txData } = await supabaseClient
+      const { data: txData, error: txErr } = await supabaseClient
         .from('mb_transactions')
         .select('*')
         .eq('user_id', userId)
         .order('created_at', { ascending: false });
-      if (txData) setTransactions(txData);
+      if (!txErr && txData && txData.length > 0) {
+        setTransactions(txData);
+        localStorage.setItem('mb_local_tx_' + userId, JSON.stringify(txData));
+      }
 
       // Fetch Bills
-      const { data: billData } = await supabaseClient
+      const { data: billData, error: billErr } = await supabaseClient
         .from('mb_bills')
         .select('*')
         .eq('user_id', userId)
         .order('created_at', { ascending: false });
-      if (billData) setSavedBills(billData);
+      if (!billErr && billData && billData.length > 0) {
+        setSavedBills(billData);
+        localStorage.setItem('mb_saved_bills', JSON.stringify(billData));
+      }
     } catch (e) {
       console.error("Error fetching app data:", e);
     }
@@ -296,40 +341,52 @@ export default function App() {
     setCounts(prev => ({ ...prev, [note]: Math.max(0, num) }));
   };
 
-  const totalCash = notes.reduce((sum, note) => sum + note * (counts[note] || 0), 0);
+  const extraCash = parseFloat(extraCashAmount) || 0;
+  const totalNotesAmount = notes.reduce((sum, note) => sum + note * (counts[note] || 0), 0);
+  const totalCash = totalNotesAmount + extraCash;
   const totalNotesCount = notes.reduce((sum, note) => sum + (counts[note] || 0), 0);
 
   const resetCash = () => {
     setCounts({ 500: 0, 200: 0, 100: 0, 50: 0, 20: 0, 10: 0, 5: 0, 2: 0, 1: 0 });
+    setExtraCashAmount('');
   };
 
   // TAB 2: Khata Actions
   const addCustomer = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newCustomerName.trim()) return;
+    if (!newCustomerName.trim() || !user) return;
 
+    const tempId = 'cust-' + Date.now();
     const newCust = {
-      name: newCustomerName,
+      id: tempId,
+      name: newCustomerName.trim(),
       phone: newCustomerPhone || '',
       user_id: user.id,
       created_at: new Date().toISOString()
     };
 
+    let savedCust = newCust;
+    let success = false;
+
     if (supabaseClient && !supabaseUrl.includes('YOUR_PROJECT')) {
-      const { data, error } = await supabaseClient
-        .from('mb_customers')
-        .insert([newCust])
-        .select();
-      if (!error && data) {
-        setCustomers([data[0], ...customers]);
-        setSelectedCustomer(data[0]);
+      try {
+        const { data, error } = await supabaseClient
+          .from('mb_customers')
+          .insert([{ name: newCust.name, phone: newCust.phone, user_id: newCust.user_id, created_at: newCust.created_at }])
+          .select();
+        if (!error && data && data[0]) {
+          savedCust = data[0];
+          success = true;
+        }
+      } catch (err) {
+        console.error("Supabase customer insert error:", err);
       }
-    } else {
-      // Local demo fallback
-      const localCust = { id: 'cust-' + Date.now(), ...newCust };
-      const updated = [localCust, ...customers];
-      setCustomers(updated);
-      setSelectedCustomer(localCust);
+    }
+
+    const updated = [savedCust, ...customers];
+    setCustomers(updated);
+    setSelectedCustomer(savedCust);
+    if (user?.id) {
       localStorage.setItem('mb_local_cust_' + user.id, JSON.stringify(updated));
     }
 
@@ -340,35 +397,85 @@ export default function App() {
 
   const addTransaction = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedCustomer || !transAmount) return;
+    if (!selectedCustomer || !transAmount || !user) return;
 
     const amount = parseFloat(transAmount) || 0;
+    const tempId = 'tx-' + Date.now();
     const newTx = {
+      id: tempId,
       customer_id: selectedCustomer.id,
       amount,
       type: transType, // 'gave' or 'got'
       note: transNote || '',
       user_id: user.id,
-      created_at: new Date().toISOString()
+      created_at: transDate ? new Date(transDate).toISOString() : new Date().toISOString()
     };
 
+    let savedTx = newTx;
     if (supabaseClient && !supabaseUrl.includes('YOUR_PROJECT')) {
-      const { data, error } = await supabaseClient
-        .from('mb_transactions')
-        .insert([newTx])
-        .select();
-      if (!error && data) {
-        setTransactions([data[0], ...transactions]);
+      try {
+        const { data, error } = await supabaseClient
+          .from('mb_transactions')
+          .insert([{ customer_id: newTx.customer_id, amount: newTx.amount, type: newTx.type, note: newTx.note, user_id: newTx.user_id, created_at: newTx.created_at }])
+          .select();
+        if (!error && data && data[0]) {
+          savedTx = data[0];
+        }
+      } catch (err) {
+        console.error("Supabase transaction insert error:", err);
       }
-    } else {
-      const localTx = { id: 'tx-' + Date.now(), ...newTx };
-      const updated = [localTx, ...transactions];
-      setTransactions(updated);
+    }
+
+    const updated = [savedTx, ...transactions];
+    setTransactions(updated);
+    if (user?.id) {
       localStorage.setItem('mb_local_tx_' + user.id, JSON.stringify(updated));
     }
 
     setTransAmount('');
     setTransNote('');
+    setTransDate(new Date().toISOString().slice(0, 16));
+  };
+
+  const deleteCustomer = async (customerId: string) => {
+    if (!confirm('Kya aap is grahak aur uske saare len-den (transactions) ko delete karna chahte hain?')) return;
+
+    const updatedCusts = customers.filter(c => c.id !== customerId);
+    const updatedTxs = transactions.filter(t => t.customer_id !== customerId);
+    setCustomers(updatedCusts);
+    setTransactions(updatedTxs);
+    if (selectedCustomer?.id === customerId) {
+      setSelectedCustomer(null);
+    }
+
+    if (user?.id) {
+      localStorage.setItem('mb_local_cust_' + user.id, JSON.stringify(updatedCusts));
+      localStorage.setItem('mb_local_tx_' + user.id, JSON.stringify(updatedTxs));
+    }
+
+    if (supabaseClient && !supabaseUrl.includes('YOUR_PROJECT')) {
+      try {
+        await supabaseClient.from('mb_transactions').delete().eq('customer_id', customerId);
+        await supabaseClient.from('mb_customers').delete().eq('id', customerId);
+      } catch (err) {
+        console.error("Error deleting customer from supabase:", err);
+      }
+    }
+  };
+
+  const shareKhataWhatsApp = () => {
+    if (!selectedCustomer) return;
+    const custTxs = transactions.filter(t => t.customer_id === selectedCustomer.id);
+    const balance = getCustomerBalance(selectedCustomer.id);
+    const balanceText = balance > 0 ? `₹${balance} Dene hain (Udhar)` : balance < 0 ? `₹${Math.abs(balance)} Jama (Advance)` : 'Hisab Clear (₹0)';
+
+    const txsText = custTxs.length > 0
+      ? custTxs.map((t, i) => `${i+1}. ${new Date(t.created_at).toLocaleDateString('hi-IN')} | ${t.type === 'gave' ? 'Udhar Diya (-)' : 'Rakam Prapt (+)'}: ₹${t.amount}${t.note ? ` (${t.note})` : ''}`).join('\n')
+      : 'Koi transaction nahi hai.';
+
+    const text = `*खाताबुक विवरण (Excel Format Report)*\n*Grahak:* ${selectedCustomer.name}\n*Mob:* ${selectedCustomer.phone || 'N/A'}\n\n*Len-Den Itihas:*\n${txsText}\n\n*Kul Balance:* *${balanceText}*\n\n-${shopDetails.shop_name}\n*Powered by Shashi Ranjan*`;
+    const url = `https://wa.me/${selectedCustomer.phone ? '91' + selectedCustomer.phone : ''}?text=${encodeURIComponent(text)}`;
+    window.open(url, '_blank');
   };
 
   // Calculate Customer Balance
@@ -419,10 +526,18 @@ export default function App() {
     e.preventDefault();
     if (!itemName.trim() || !itemRate) return;
     const rate = parseFloat(itemRate) || 0;
-    const qty = parseInt(itemQty) || 1;
-    const total = qty * rate;
-    setBillItems([...billItems, { name: itemName, qty, rate, total }]);
+    const qty = parseFloat(itemQty) || 1;
+    const total = Math.round((qty * rate) * 100) / 100;
+    setBillItems([...billItems, { 
+      name: itemName.trim(), 
+      description: itemDescription.trim(), 
+      unit: itemUnit.trim() || 'Pcs',
+      qty, 
+      rate, 
+      total 
+    }]);
     setItemName('');
+    setItemDescription('');
     setItemRate('');
     setItemQty('1');
   };
@@ -431,9 +546,12 @@ export default function App() {
     setBillItems(billItems.filter((_, i) => i !== index));
   };
 
-  const subtotal = billItems.reduce((sum, item) => sum + item.total, 0);
+  const subtotal = Math.round(billItems.reduce((sum, item) => sum + item.total, 0) * 100) / 100;
   const discountValue = parseFloat(discountRs) || 0;
-  const payable = Math.max(0, subtotal - discountValue);
+  const taxableAmount = Math.max(0, subtotal - discountValue);
+  const taxRate = parseFloat(taxPercent) || 0;
+  const taxAmount = Math.round(((taxableAmount * taxRate) / 100) * 100) / 100;
+  const payable = Math.max(0, Math.round((taxableAmount + taxAmount) * 100) / 100);
 
   const printThermal = () => {
     const printWindow = window.open('', '_blank');
@@ -442,7 +560,7 @@ export default function App() {
     printWindow.document.write(`
       <html>
         <head>
-          <title>Thermal Bill #${currentBillNo}</title>
+          <title>Thermal Bill #${effectiveBillNo}</title>
           <style>
             @page { size: 58mm auto; margin: 0; }
             body { font-family: monospace; font-size: 11px; width: 58mm; margin: 0; padding: 6px; background: white; color: black; }
@@ -472,7 +590,7 @@ export default function App() {
     printWindow.document.write(`
       <html>
         <head>
-          <title>A5 Bill #${currentBillNo}</title>
+          <title>A5 Bill #${effectiveBillNo}</title>
           <style>
             @page { size: A5; margin: 10mm; }
             body { font-family: sans-serif; font-size: 12px; margin: 0; padding: 10px; background: white; color: black; }
@@ -495,9 +613,99 @@ export default function App() {
     printWindow.document.close();
   };
 
+  const generateThermalReceiptText = (data: {
+    billNo: string | number;
+    customerName: string;
+    customerPhone?: string;
+    dateTime?: string;
+    paymentMode?: string;
+    items: Array<{ name: string; description?: string; unit?: string; qty: number; rate: number; total: number }>;
+    subtotal: number;
+    discount?: number;
+    taxRate?: number;
+    taxAmount?: number;
+    total: number;
+    note?: string;
+  }) => {
+    const divider = '--------------------------------';
+    const doubleLine = '================================';
+
+    const shopName = shopDetails.shop_name.toUpperCase();
+    const address = shopDetails.address;
+    const mobile = `Mob: ${shopDetails.mobile}`;
+    const gst = shopDetails.gst ? `GSTIN: ${shopDetails.gst}` : '';
+
+    const dateStr = data.dateTime 
+      ? new Date(data.dateTime).toLocaleString('hi-IN', { dateStyle: 'short', timeStyle: 'short' })
+      : new Date().toLocaleString('hi-IN', { dateStyle: 'short', timeStyle: 'short' });
+
+    const custName = data.customerName.trim() || 'Cash';
+    const custPhone = data.customerPhone ? ` (${data.customerPhone})` : '';
+
+    const billHeader = [
+      `Bill No : #${data.billNo}`,
+      `Date    : ${dateStr}`,
+      `Customer: ${custName}${custPhone}`,
+      `Payment : ${data.paymentMode || 'Cash'}`
+    ].join('\n');
+
+    const itemLines = data.items.map((item, i) => {
+      const num = `${i + 1}.`;
+      const desc = item.description ? ` (${item.description})` : '';
+      const unitStr = item.unit && item.unit !== 'Pcs' ? ` ${item.unit}` : '';
+      return `${num} ${item.name}${desc}\n   ${item.qty}${unitStr} x ₹${item.rate} = ₹${item.total}`;
+    }).join('\n');
+
+    const sub = data.subtotal || 0;
+    const disc = data.discount || 0;
+    const taxAmt = data.taxAmount || 0;
+    const taxRt = data.taxRate || 0;
+
+    let totals = `Subtotal      : ₹${sub.toFixed(2)}`;
+    if (disc > 0) {
+      totals += `\nDiscount      : -₹${disc.toFixed(2)}`;
+    }
+    if (taxAmt > 0) {
+      totals += `\nGST (${taxRt}%)    : +₹${taxAmt.toFixed(2)}`;
+    }
+    totals += `\nTOTAL PAYABLE : ₹${data.total.toFixed(2)}`;
+
+    const customNote = data.note ? `\n${divider}\nNote: ${data.note}` : '';
+
+    return `🧾 *ESTIMATE / CASH MEMO*
+\`\`\`
+${doubleLine}
+${shopName}
+${address}
+${mobile}${gst ? `\n${gst}` : ''}
+${divider}
+${billHeader}
+${divider}
+ITEMS:
+${itemLines || 'No Items'}
+${divider}
+${totals}${customNote}
+${doubleLine}
+${shopDetails.footer}
+\`\`\`
+*Powered by Shashi Ranjan*`;
+  };
+
   const shareWhatsApp = () => {
-    const itemsText = billItems.map((item, i) => `${i+1}. ${item.name} x ${item.qty} = ₹${item.total}`).join('\n');
-    const text = `*${shopDetails.shop_name}*\n${shopDetails.address}\nMob: ${shopDetails.mobile}\n\n*Bill No:* #${currentBillNo}\n*Customer:* ${billCustomerName}\n*Date:* ${new Date().toLocaleDateString('hi-IN')}\n\n*Items:*\n${itemsText}\n\n*Subtotal:* ₹${subtotal}\n*Discount:* ₹${discountValue}\n*Grand Payable:* ₹${payable}\n\n${shopDetails.footer}\n*Powered by Shashi Ranjan*`;
+    const text = generateThermalReceiptText({
+      billNo: effectiveBillNo,
+      customerName: billCustomerName,
+      customerPhone: billCustomerPhone,
+      dateTime: billDateTime,
+      paymentMode,
+      items: billItems,
+      subtotal,
+      discount: discountValue,
+      taxRate,
+      taxAmount,
+      total: payable,
+      note: billCustomNote
+    });
     const url = `https://wa.me/${billCustomerPhone ? '91' + billCustomerPhone : ''}?text=${encodeURIComponent(text)}`;
     window.open(url, '_blank');
   };
@@ -506,15 +714,19 @@ export default function App() {
     if (billItems.length === 0) return;
     const billData = {
       id: 'bill-' + Date.now(),
-      bill_no: currentBillNo,
-      customer_name: billCustomerName || 'Cash Customer',
-      customer_phone: billCustomerPhone || '',
+      bill_no: effectiveBillNo,
+      customer_name: billCustomerName.trim() || 'Cash',
+      customer_phone: billCustomerPhone.trim() || '',
+      payment_mode: paymentMode,
+      note: billCustomNote.trim(),
       items: billItems,
       subtotal,
       discount: discountValue,
+      tax_rate: taxRate,
+      tax_amount: taxAmount,
       total: payable,
       user_id: user.id,
-      created_at: new Date().toISOString()
+      created_at: billDateTime ? new Date(billDateTime).toISOString() : new Date().toISOString()
     };
 
     const updated = [billData, ...savedBills];
@@ -531,7 +743,7 @@ export default function App() {
             items: billItems,
             subtotal,
             discount: discountValue,
-            tax: 0,
+            tax: taxAmount,
             total: payable,
             user_id: user.id,
             created_at: billData.created_at
@@ -548,6 +760,18 @@ export default function App() {
     }
   };
 
+  const startNewBill = () => {
+    setBillNoInput('');
+    setBillCustomerName('');
+    setBillCustomerPhone('');
+    setBillItems([]);
+    setDiscountRs('0');
+    setTaxPercent('0');
+    setPaymentMode('Cash');
+    setBillCustomNote('');
+    setBillDateTime(new Date().toISOString().slice(0, 16));
+  };
+
   const deleteBill = (id: string) => {
     if (confirm('Kya aap is bill ko delete karna chahte hain?')) {
       const updated = savedBills.filter(b => b.id !== id);
@@ -557,10 +781,19 @@ export default function App() {
   };
 
   const editBill = (bill: any) => {
-    setBillCustomerName(bill.customer_name || 'Cash Customer');
+    setBillNoInput(bill.bill_no ? bill.bill_no.toString() : '');
+    setBillCustomerName(bill.customer_name || '');
     setBillCustomerPhone(bill.customer_phone || '');
     setBillItems(bill.items || []);
     setDiscountRs(bill.discount ? bill.discount.toString() : '0');
+    setTaxPercent(bill.tax_rate ? bill.tax_rate.toString() : '0');
+    setPaymentMode(bill.payment_mode || 'Cash');
+    setBillCustomNote(bill.note || '');
+    if (bill.created_at) {
+      try {
+        setBillDateTime(new Date(bill.created_at).toISOString().slice(0, 16));
+      } catch (e) {}
+    }
     window.scrollTo({ top: 0, behavior: 'smooth' });
     alert(`Bill #${bill.bill_no || ''} edit karne ke liye form mein load kar diya gaya hai.`);
   };
@@ -681,17 +914,6 @@ export default function App() {
                 {authMode === 'login' ? "Account nahi hai? Naya Account Banao" : "Pehle se account hai? Login Karo"}
               </button>
             </div>
-
-            {/* Supabase Config Status Button */}
-            <div className="mt-8 pt-4 border-t border-neutral-800 text-center">
-              <button
-                onClick={() => setShowSettings(true)}
-                className="text-[11px] text-neutral-400 hover:text-neutral-200 inline-flex items-center gap-1.5 cursor-pointer bg-neutral-800/60 px-3 py-1.5 rounded-lg border border-neutral-700/50"
-              >
-                <Settings className="w-3.5 h-3.5 text-amber-400" />
-                <span>Supabase Database Settings</span>
-              </button>
-            </div>
           </div>
         </main>
 
@@ -765,7 +987,7 @@ export default function App() {
       
       {/* HEADER: Gradient #4A0A0A to #8B0000 */}
       <header className="bg-gradient-to-r from-[#4A0A0A] via-[#660000] to-[#8B0000] text-white shadow-xl sticky top-0 z-40 border-b border-red-900/60">
-        <div className="max-w-4xl mx-auto px-4 py-3.5 flex items-center justify-between">
+        <div className="max-w-6xl mx-auto px-4 py-3.5 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="bg-black/30 p-2.5 rounded-xl border border-red-600/30 shadow-inner">
               <Wallet className="w-6 h-6 text-amber-400" />
@@ -785,13 +1007,6 @@ export default function App() {
 
           <div className="flex items-center gap-2">
             <button
-              onClick={() => setShowSettings(true)}
-              title="Settings"
-              className="bg-black/30 hover:bg-black/50 p-2 rounded-xl border border-white/10 text-neutral-200 transition cursor-pointer"
-            >
-              <Settings className="w-4 h-4 text-amber-400" />
-            </button>
-            <button
               onClick={handleLogout}
               className="bg-red-900/60 hover:bg-red-800/80 text-white px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 border border-red-700/50 shadow-md transition cursor-pointer"
             >
@@ -802,7 +1017,7 @@ export default function App() {
         </div>
 
         {/* TABS NAVIGATION */}
-        <div className="max-w-4xl mx-auto px-4 flex border-t border-red-900/40 bg-black/25 overflow-x-auto no-scrollbar">
+        <div className="max-w-6xl mx-auto px-4 flex border-t border-red-900/40 bg-black/25 overflow-x-auto no-scrollbar">
           <button
             onClick={() => setActiveTab('cash')}
             className={`flex-1 py-3 px-4 text-xs md:text-sm font-bold flex items-center justify-center gap-2 whitespace-nowrap transition cursor-pointer border-b-2 ${
@@ -854,7 +1069,7 @@ export default function App() {
       </header>
 
       {/* MAIN CONTENT AREA */}
-      <main className="flex-1 max-w-4xl w-full mx-auto p-4 md:p-6 mb-16">
+      <main className="flex-1 max-w-6xl w-full mx-auto p-4 md:p-6 lg:p-8 mb-16">
         
         {/* ==================================================== */}
         {/* TAB 1: CASH COUNTER */}
@@ -941,6 +1156,31 @@ export default function App() {
               })}
             </div>
 
+            {/* Extra Cash / Sikka (Coins) / Loose Change Input Box */}
+            <div className="bg-neutral-900 border border-neutral-800 p-4 rounded-3xl flex items-center justify-between gap-3 shadow-md">
+              <div className="flex items-center gap-2">
+                <div className="w-10 h-10 rounded-xl bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center justify-center font-bold text-lg">
+                  🪙
+                </div>
+                <div>
+                  <h4 className="text-xs md:text-sm font-bold text-white">Sikka / Chillar / Extra Cash (₹)</h4>
+                  <p className="text-[10px] text-neutral-400">Coins ya extra loose cash ka amount yahan dalein</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-neutral-400 font-bold text-sm">₹</span>
+                <input
+                  type="number"
+                  step="any"
+                  min="0"
+                  placeholder="0"
+                  value={extraCashAmount}
+                  onChange={(e) => setExtraCashAmount(e.target.value)}
+                  className="w-28 md:w-36 bg-white text-neutral-950 font-bold text-right py-2 px-3 rounded-xl border border-neutral-300 focus:outline-none focus:ring-2 focus:ring-amber-500 text-sm md:text-base shadow-inner"
+                />
+              </div>
+            </div>
+
             {/* Total at bottom with gold gradient */}
             <div className="bg-gradient-to-r from-amber-600 via-amber-500 to-yellow-500 p-5 rounded-3xl shadow-2xl text-neutral-950 flex items-center justify-between border-2 border-amber-300">
               <div>
@@ -1012,7 +1252,7 @@ export default function App() {
                         </div>
                         <div className="text-right">
                           <p className={`text-xs font-bold font-mono ${balance > 0 ? 'text-red-400' : balance < 0 ? 'text-emerald-400' : 'text-neutral-400'}`}>
-                            {balance > 0 ? `₹${balance} Dene hain` : balance < 0 ? `₹{Math.abs(balance)} Jama` : 'Clear'}
+                            {balance > 0 ? `₹${balance} Dene hain` : balance < 0 ? `₹${Math.abs(balance)} Jama` : 'Clear'}
                           </p>
                         </div>
                       </div>
@@ -1039,22 +1279,38 @@ export default function App() {
                         {selectedCustomer.phone || 'Number uplabdh nahi hai'}
                       </p>
                     </div>
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2">
                       <button
                         onClick={downloadCustomerCSV}
                         className="bg-neutral-800 hover:bg-neutral-700 text-amber-400 border border-neutral-700 px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow transition"
                         title="Download CSV Backup"
                       >
                         <Download className="w-3.5 h-3.5" />
-                        <span>CSV Backup</span>
+                        <span>CSV</span>
                       </button>
-                      <div className="text-right">
+                      <button
+                        onClick={shareKhataWhatsApp}
+                        className="bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow transition"
+                        title="Send All Transactions Excel Report on WhatsApp"
+                      >
+                        <Phone className="w-3.5 h-3.5" />
+                        <span>WhatsApp Excel</span>
+                      </button>
+                      <button
+                        onClick={() => deleteCustomer(selectedCustomer.id)}
+                        className="bg-red-950/80 hover:bg-red-900 text-red-300 border border-red-800 px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow transition"
+                        title="Delete Customer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Delete</span>
+                      </button>
+                      <div className="text-right pl-2 border-l border-neutral-800">
                         <p className="text-[10px] text-neutral-400 uppercase tracking-wider">Kul Balance</p>
                         {(() => {
                           const bal = getCustomerBalance(selectedCustomer.id);
                           return (
                             <p className={`text-sm md:text-base font-black font-mono ${bal > 0 ? 'text-red-400' : bal < 0 ? 'text-emerald-400' : 'text-neutral-300'}`}>
-                              {bal > 0 ? `₹${bal} (Udhar)` : bal < 0 ? `₹{Math.abs(bal)} (Advance)` : '₹0 (Hisab Clear)'}
+                              {bal > 0 ? `₹${bal} (Udhar)` : bal < 0 ? `₹${Math.abs(bal)} (Advance)` : '₹0 (Hisab Clear)'}
                             </p>
                           );
                         })()}
@@ -1063,15 +1319,25 @@ export default function App() {
                   </div>
 
                   {/* Add Transaction Form */}
-                  <form onSubmit={addTransaction} className="py-4 grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <form onSubmit={addTransaction} className="py-4 grid grid-cols-1 sm:grid-cols-4 gap-2">
                     <div>
                       <input
                         type="number"
+                        step="any"
                         placeholder="Rakam (₹)"
                         value={transAmount}
                         onChange={(e) => setTransAmount(e.target.value)}
                         className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-amber-500"
                         required
+                      />
+                    </div>
+                    <div>
+                      <input
+                        type="datetime-local"
+                        value={transDate}
+                        onChange={(e) => setTransDate(e.target.value)}
+                        className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-2 py-2 text-[11px] text-white outline-none focus:border-amber-500"
+                        title="Transaction Date & Time"
                       />
                     </div>
                     <div>
@@ -1284,20 +1550,40 @@ export default function App() {
               
               {/* 2. Bill Form Column */}
               <div className="bg-neutral-900 border border-neutral-800 rounded-3xl p-5 md:p-6 shadow-xl space-y-4">
-                <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
-                  <Receipt className="w-4 h-4 text-amber-400" />
-                  Naya Bill Banayein
-                </h3>
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
+                    <Receipt className="w-4 h-4 text-amber-400" />
+                    Naya Bill Banayein
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={startNewBill}
+                    className="bg-neutral-800 hover:bg-neutral-700 text-amber-400 border border-neutral-700 px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1 cursor-pointer shadow transition"
+                    title="Clear form for new bill"
+                  >
+                    <span>➕ Naya Bill</span>
+                  </button>
+                </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-neutral-400 mb-1">Bill No. (Auto / Custom Edit)</label>
+                    <input
+                      type="text"
+                      value={billNoInput}
+                      onChange={(e) => setBillNoInput(e.target.value)}
+                      placeholder={autoNextBillNo.toString()}
+                      className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-xs text-amber-400 font-mono font-bold outline-none focus:border-amber-500"
+                    />
+                  </div>
                   <div>
                     <label className="block text-[11px] font-semibold text-neutral-400 mb-1">Grahak Ka Naam</label>
                     <input
                       type="text"
+                      placeholder="Grahak Ka Naam (e.g. Ramesh Kumar / Cash)"
                       value={billCustomerName}
                       onChange={(e) => setBillCustomerName(e.target.value)}
                       className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-amber-500"
-                      required
                     />
                   </div>
                   <div>
@@ -1311,48 +1597,115 @@ export default function App() {
                       className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-amber-500"
                     />
                   </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-neutral-400 mb-1">Bill Date & Time (Editable)</label>
+                    <input
+                      type="datetime-local"
+                      value={billDateTime}
+                      onChange={(e) => setBillDateTime(e.target.value)}
+                      className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-amber-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-neutral-400 mb-1">Payment Mode (Bhugtan)</label>
+                    <select
+                      value={paymentMode}
+                      onChange={(e) => setPaymentMode(e.target.value)}
+                      className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-amber-500"
+                    >
+                      <option value="Cash">Cash (Nagad)</option>
+                      <option value="UPI / Online">UPI / Online (GPay, PhonePe)</option>
+                      <option value="Udhar / Khata">Udhar / Khata (Credit)</option>
+                      <option value="Card">Card (Debit/Credit)</option>
+                      <option value="Cheque">Cheque</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-neutral-400 mb-1">Bill Note / Shart (Optional)</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Bika hua maal wapas nahi hoga"
+                      value={billCustomNote}
+                      onChange={(e) => setBillCustomNote(e.target.value)}
+                      className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-amber-500"
+                    />
+                  </div>
                 </div>
 
                 {/* Add Item Form */}
                 <form onSubmit={addItemToBill} className="bg-neutral-950/60 border border-neutral-800 p-3.5 rounded-2xl space-y-3">
-                  <h4 className="text-xs font-semibold text-neutral-300">Item Jodein</h4>
+                  <h4 className="text-xs font-semibold text-neutral-300">Item Jodein (Koi bhi item, unit ya rate)</h4>
                   <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
-                    <div className="sm:col-span-5">
+                    <div className="sm:col-span-6">
                       <input
                         type="text"
-                        placeholder="Item Name"
+                        placeholder="Item Name (e.g. Rice, Sugar, Shirt)"
                         value={itemName}
                         onChange={(e) => setItemName(e.target.value)}
                         className="w-full bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-amber-500"
+                        required
                       />
                     </div>
-                    <div className="sm:col-span-3">
+                    <div className="sm:col-span-6">
                       <input
-                        type="number"
-                        min="1"
-                        placeholder="Qty"
-                        value={itemQty}
-                        onChange={(e) => setItemQty(e.target.value)}
+                        type="text"
+                        placeholder="Description / Size / Brand (Optional)"
+                        value={itemDescription}
+                        onChange={(e) => setItemDescription(e.target.value)}
                         className="w-full bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-amber-500"
                       />
                     </div>
                     <div className="sm:col-span-4">
+                      <div className="flex gap-1">
+                        <input
+                          type="number"
+                          step="any"
+                          min="0.001"
+                          placeholder="Qty"
+                          value={itemQty}
+                          onChange={(e) => setItemQty(e.target.value)}
+                          className="w-full bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-amber-500"
+                          required
+                        />
+                        <select
+                          value={itemUnit}
+                          onChange={(e) => setItemUnit(e.target.value)}
+                          className="bg-neutral-900 border border-neutral-800 rounded-xl px-2 py-2 text-[11px] text-neutral-300 outline-none focus:border-amber-500"
+                        >
+                          <option value="Pcs">Pcs</option>
+                          <option value="Kg">Kg</option>
+                          <option value="Gm">Gm</option>
+                          <option value="Ltr">Ltr</option>
+                          <option value="Mtr">Mtr</option>
+                          <option value="Box">Box</option>
+                          <option value="Pkt">Pkt</option>
+                          <option value="Dozen">Dozen</option>
+                          <option value="Bag">Bag</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div className="sm:col-span-4">
                       <input
                         type="number"
+                        step="any"
+                        min="0"
                         placeholder="Rate (₹)"
                         value={itemRate}
                         onChange={(e) => setItemRate(e.target.value)}
                         className="w-full bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-amber-500"
+                        required
                       />
                     </div>
+                    <div className="sm:col-span-4 flex items-center">
+                      <button
+                        type="submit"
+                        className="w-full bg-amber-500 hover:bg-amber-400 text-neutral-950 font-bold py-2 rounded-xl text-xs cursor-pointer shadow transition flex items-center justify-center gap-1"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Item Add Karein</span>
+                      </button>
+                    </div>
                   </div>
-                  <button
-                    type="submit"
-                    className="w-full bg-amber-500 hover:bg-amber-400 text-neutral-950 font-bold py-2 rounded-xl text-xs cursor-pointer shadow transition flex items-center justify-center gap-1"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>Item Add Karein</span>
-                  </button>
                 </form>
 
                 {/* Items List Table */}
@@ -1361,7 +1714,8 @@ export default function App() {
                     <div key={idx} className="bg-neutral-950 border border-neutral-800 p-2.5 rounded-xl flex items-center justify-between text-xs">
                       <div>
                         <span className="font-bold text-white">{idx + 1}. {item.name}</span>
-                        <span className="text-neutral-400 ml-2">({item.qty} × ₹{item.rate})</span>
+                        {item.description && <span className="text-neutral-400 block text-[10px] italic">({item.description})</span>}
+                        <span className="text-neutral-400 ml-2">({item.qty} {item.unit && item.unit !== 'Pcs' ? item.unit : ''} × ₹{item.rate})</span>
                       </div>
                       <div className="flex items-center gap-3">
                         <span className="font-mono font-bold text-amber-400">₹{item.total}</span>
@@ -1381,21 +1735,41 @@ export default function App() {
                   )}
                 </div>
 
-                {/* Totals & Discount */}
+                {/* Totals & Discount & GST */}
                 <div className="space-y-2 pt-2 border-t border-neutral-800 text-xs">
                   <div className="flex justify-between text-neutral-400">
                     <span>Subtotal:</span>
-                    <span className="font-mono text-white">₹{subtotal}</span>
+                    <span className="font-mono text-white">₹{subtotal.toFixed(2)}</span>
                   </div>
                   <div className="flex items-center justify-between gap-4">
                     <span className="text-neutral-400">Discount (₹):</span>
                     <input
                       type="number"
+                      step="any"
+                      min="0"
                       value={discountRs}
                       onChange={(e) => setDiscountRs(e.target.value)}
                       className="w-24 bg-neutral-950 border border-neutral-800 rounded-lg px-2 py-1 text-right text-white"
                     />
                   </div>
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="text-neutral-400">GST / Tax (%):</span>
+                    <input
+                      type="number"
+                      step="any"
+                      min="0"
+                      placeholder="0"
+                      value={taxPercent}
+                      onChange={(e) => setTaxPercent(e.target.value)}
+                      className="w-24 bg-neutral-950 border border-neutral-800 rounded-lg px-2 py-1 text-right text-white"
+                    />
+                  </div>
+                  {taxAmount > 0 && (
+                    <div className="flex justify-between text-neutral-400">
+                      <span>GST Amount ({taxRate}%):</span>
+                      <span className="font-mono text-emerald-400">+₹{taxAmount.toFixed(2)}</span>
+                    </div>
+                  )}
                   <div className="flex justify-between text-sm font-bold text-amber-400 pt-2 border-t border-neutral-800">
                     <span>Grand Payable:</span>
                     <span className="font-mono text-base">₹{payable.toFixed(2)}</span>
@@ -1445,9 +1819,10 @@ export default function App() {
                         </div>
 
                         <div className="border-b border-dashed border-black pb-2 mb-2 space-y-0.5 text-[10px]">
-                          <div><strong>Bill No:</strong> #{currentBillNo}</div>
-                          <div><strong>Date:</strong> {new Date().toLocaleDateString('hi-IN')} {new Date().toLocaleTimeString('hi-IN', {hour: '2-digit', minute:'2-digit'})}</div>
-                          <div><strong>Customer:</strong> {billCustomerName} {billCustomerPhone ? `(${billCustomerPhone})` : ''}</div>
+                          <div><strong>Bill No:</strong> #{effectiveBillNo}</div>
+                          <div><strong>Date:</strong> {billDateTime ? new Date(billDateTime).toLocaleString('hi-IN') : new Date().toLocaleString('hi-IN')}</div>
+                          <div><strong>Customer:</strong> {billCustomerName.trim() || 'Cash'} {billCustomerPhone ? `(${billCustomerPhone})` : ''}</div>
+                          <div><strong>Payment:</strong> {paymentMode}</div>
                         </div>
 
                         <div className="border-b border-dashed border-black pb-2 mb-2">
@@ -1462,9 +1837,12 @@ export default function App() {
                             <tbody>
                               {billItems.map((item, i) => (
                                 <tr key={i}>
-                                  <td className="py-0.5">{i + 1}</td>
-                                  <td className="py-0.5 truncate max-w-[80px]">{item.name}</td>
-                                  <td className="py-0.5 text-right">{item.qty}×{item.rate}={item.total}</td>
+                                  <td className="py-0.5 align-top">{i + 1}</td>
+                                  <td className="py-0.5 truncate max-w-[80px]">
+                                    <div>{item.name}</div>
+                                    {item.description && <div className="text-[9px] text-neutral-600">{item.description}</div>}
+                                  </td>
+                                  <td className="py-0.5 text-right align-top">{item.qty}{item.unit && item.unit !== 'Pcs' ? item.unit : ''}×{item.rate}={item.total}</td>
                                 </tr>
                               ))}
                               {billItems.length === 0 && (
@@ -1477,17 +1855,24 @@ export default function App() {
                         </div>
 
                         <div className="space-y-0.5 pb-2 border-b border-dashed border-black mb-2 text-[11px]">
-                          <div className="flex justify-between"><span>Subtotal:</span><span>₹{subtotal}</span></div>
-                          {discountValue > 0 && <div className="flex justify-between"><span>Discount:</span><span>-₹{discountValue}</span></div>}
+                          <div className="flex justify-between"><span>Subtotal:</span><span>₹{subtotal.toFixed(2)}</span></div>
+                          {discountValue > 0 && <div className="flex justify-between"><span>Discount:</span><span>-₹{discountValue.toFixed(2)}</span></div>}
+                          {taxAmount > 0 && <div className="flex justify-between"><span>GST ({taxRate}%):</span><span>+₹{taxAmount.toFixed(2)}</span></div>}
                           <div className="flex justify-between font-bold text-[13px] pt-1">
                             <span>Payable:</span>
                             <span>₹{payable.toFixed(2)}</span>
                           </div>
                         </div>
 
+                        {billCustomNote && (
+                          <div className="text-center text-[10px] pb-1 border-b border-dashed border-black mb-1 italic">
+                            {billCustomNote}
+                          </div>
+                        )}
+
                         <div className="text-center text-[10px] space-y-0.5">
                           <p>{shopDetails.footer}</p>
-                          <p className="text-[9px] text-neutral-500">Powered by Shashi Ranjan</p>
+                          <p className="text-[9px] text-neutral-500 opacity-70">Powered by Shashi Ranjan</p>
                         </div>
                       </div>
                     )}
@@ -1510,12 +1895,13 @@ export default function App() {
 
                         <div className="grid grid-cols-2 gap-4 bg-neutral-50 p-3 border border-black text-[11px]">
                           <div>
-                            <p><strong>Customer Name:</strong> {billCustomerName}</p>
+                            <p><strong>Customer Name:</strong> {billCustomerName.trim() || 'Cash'}</p>
                             <p><strong>Customer Mobile:</strong> {billCustomerPhone || 'N/A'}</p>
+                            <p><strong>Payment Mode:</strong> {paymentMode}</p>
                           </div>
                           <div className="text-right">
-                            <p><strong>Bill No:</strong> #{currentBillNo}</p>
-                            <p><strong>Date:</strong> {new Date().toLocaleDateString('hi-IN')}</p>
+                            <p><strong>Bill No:</strong> #{effectiveBillNo}</p>
+                            <p><strong>Date:</strong> {billDateTime ? new Date(billDateTime).toLocaleString('hi-IN') : new Date().toLocaleString('hi-IN')}</p>
                           </div>
                         </div>
 
@@ -1525,7 +1911,7 @@ export default function App() {
                             <tr className="bg-neutral-200 text-black">
                               <th className="border border-black p-2 text-center w-10">S.No</th>
                               <th className="border border-black p-2 text-left">Item Name</th>
-                              <th className="border border-black p-2 text-center w-16">Qty</th>
+                              <th className="border border-black p-2 text-center w-20">Qty / Unit</th>
                               <th className="border border-black p-2 text-right w-20">Rate (₹)</th>
                               <th className="border border-black p-2 text-right w-24">Amount (₹)</th>
                             </tr>
@@ -1533,11 +1919,14 @@ export default function App() {
                           <tbody>
                             {billItems.map((item, i) => (
                               <tr key={i}>
-                                <td className="border border-black p-2 text-center">{i + 1}</td>
-                                <td className="border border-black p-2">{item.name}</td>
-                                <td className="border border-black p-2 text-center">{item.qty}</td>
-                                <td className="border border-black p-2 text-right">₹{item.rate}</td>
-                                <td className="border border-black p-2 text-right font-bold">₹{item.total}</td>
+                                <td className="border border-black p-2 text-center align-top">{i + 1}</td>
+                                <td className="border border-black p-2">
+                                  <div className="font-bold">{item.name}</div>
+                                  {item.description && <div className="text-[10px] text-neutral-600">{item.description}</div>}
+                                </td>
+                                <td className="border border-black p-2 text-center align-top">{item.qty} {item.unit || ''}</td>
+                                <td className="border border-black p-2 text-right align-top">₹{item.rate}</td>
+                                <td className="border border-black p-2 text-right font-bold align-top">₹{item.total}</td>
                               </tr>
                             ))}
                             {billItems.length === 0 && (
@@ -1549,16 +1938,29 @@ export default function App() {
                         </table>
 
                         {/* Bottom Right Totals */}
-                        <div className="flex justify-end pt-2">
+                        <div className="flex justify-between items-start pt-2">
+                          <div className="text-xs text-neutral-600 italic max-w-xs">
+                            {billCustomNote && (
+                              <p className="border border-neutral-300 p-2 rounded bg-neutral-50">
+                                <strong>Note:</strong> {billCustomNote}
+                              </p>
+                            )}
+                          </div>
                           <div className="w-64 space-y-1 text-right text-xs">
                             <div className="flex justify-between py-1 border-b border-neutral-300">
                               <span>Subtotal:</span>
-                              <span className="font-mono">₹{subtotal}</span>
+                              <span className="font-mono">₹{subtotal.toFixed(2)}</span>
                             </div>
                             {discountValue > 0 && (
                               <div className="flex justify-between py-1 border-b border-neutral-300">
                                 <span>Discount:</span>
-                                <span className="font-mono">-₹{discountValue}</span>
+                                <span className="font-mono">-₹{discountValue.toFixed(2)}</span>
+                              </div>
+                            )}
+                            {taxAmount > 0 && (
+                              <div className="flex justify-between py-1 border-b border-neutral-300">
+                                <span>GST ({taxRate}%):</span>
+                                <span className="font-mono">+₹{taxAmount.toFixed(2)}</span>
                               </div>
                             )}
                             <div className="flex justify-between py-2 text-[18px] font-black border-t-2 border-black">
@@ -1572,7 +1974,7 @@ export default function App() {
                         <div className="pt-6 border-t border-black flex justify-between items-end text-[11px]">
                           <div>
                             <p className="font-bold text-neutral-800">{shopDetails.footer}</p>
-                            <p className="text-neutral-500 text-[10px] mt-0.5">Powered by Shashi Ranjan</p>
+                            <p className="text-neutral-500 text-[10px] mt-0.5 opacity-70">Powered by Shashi Ranjan</p>
                           </div>
                           <div className="text-center">
                             <div className="h-10 border-b border-black mb-1 w-32"></div>
@@ -1723,6 +2125,7 @@ export default function App() {
                   <div className="mb-3 space-y-0.5">
                     <p><strong>Grahak:</strong> {viewingBill.customer_name}</p>
                     {viewingBill.customer_phone && <p><strong>Phone:</strong> {viewingBill.customer_phone}</p>}
+                    {viewingBill.payment_mode && <p><strong>Payment:</strong> {viewingBill.payment_mode}</p>}
                   </div>
                   <div className="border-t border-b border-dashed border-neutral-400 py-2 mb-3 space-y-1">
                     <div className="flex justify-between font-bold">
@@ -1731,7 +2134,7 @@ export default function App() {
                     </div>
                     {viewingBill.items?.map((it: any, i: number) => (
                       <div key={i} className="flex justify-between">
-                        <span>{it.name} x {it.qty}</span>
+                        <span>{it.name} x {it.qty} {it.unit && it.unit !== 'Pcs' ? it.unit : ''}</span>
                         <span>₹{it.total || (it.price * it.qty)}</span>
                       </div>
                     ))}
@@ -1739,21 +2142,51 @@ export default function App() {
                   <div className="space-y-1 pb-3 border-b border-dashed border-neutral-400 mb-4">
                     <div className="flex justify-between"><span>Subtotal:</span><span>₹{viewingBill.subtotal}</span></div>
                     {viewingBill.discount > 0 && <div className="flex justify-between"><span>Discount:</span><span>-₹{viewingBill.discount}</span></div>}
+                    {viewingBill.tax > 0 && <div className="flex justify-between"><span>GST:</span><span>+₹{viewingBill.tax}</span></div>}
                     <div className="flex justify-between font-bold text-sm pt-1"><span>Grand Payable:</span><span>₹{viewingBill.total?.toFixed(2)}</span></div>
                   </div>
+                  {viewingBill.note && (
+                    <div className="text-center text-[10px] pb-2 border-b border-dashed border-neutral-400 mb-2 italic text-neutral-600">
+                      Note: {viewingBill.note}
+                    </div>
+                  )}
                   <div className="text-center text-[10px] text-neutral-500 mb-4">
                     {shopDetails.footer} <br/> Powered by Shashi Ranjan
                   </div>
                   <div className="flex gap-2">
                     <button
                       onClick={() => setViewingBill(null)}
-                      className="flex-1 bg-neutral-200 hover:bg-neutral-300 text-neutral-800 py-2 rounded-xl font-bold cursor-pointer"
+                      className="bg-neutral-200 hover:bg-neutral-300 text-neutral-800 py-2 px-3 rounded-xl font-bold cursor-pointer"
                     >
                       Band Karein
                     </button>
                     <button
+                      onClick={() => {
+                        const text = generateThermalReceiptText({
+                          billNo: viewingBill.bill_no || '---',
+                          customerName: viewingBill.customer_name || 'Cash',
+                          customerPhone: viewingBill.customer_phone || '',
+                          dateTime: viewingBill.created_at,
+                          paymentMode: viewingBill.payment_mode || 'Cash',
+                          items: viewingBill.items || [],
+                          subtotal: viewingBill.subtotal || 0,
+                          discount: viewingBill.discount || 0,
+                          taxRate: viewingBill.tax_rate || 0,
+                          taxAmount: viewingBill.tax || 0,
+                          total: viewingBill.total || 0,
+                          note: viewingBill.note || ''
+                        });
+                        const url = `https://wa.me/${viewingBill.customer_phone ? '91' + viewingBill.customer_phone : ''}?text=${encodeURIComponent(text)}`;
+                        window.open(url, '_blank');
+                      }}
+                      className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white py-2 rounded-xl font-bold cursor-pointer flex items-center justify-center gap-1 shadow"
+                    >
+                      <Phone className="w-3.5 h-3.5" />
+                      <span>WhatsApp</span>
+                    </button>
+                    <button
                       onClick={() => window.print()}
-                      className="flex-1 bg-neutral-900 hover:bg-neutral-800 text-white py-2 rounded-xl font-bold cursor-pointer flex items-center justify-center gap-1"
+                      className="flex-1 bg-neutral-900 hover:bg-neutral-800 text-white py-2 rounded-xl font-bold cursor-pointer flex items-center justify-center gap-1 shadow"
                     >
                       <Printer className="w-3.5 h-3.5" />
                       <span>Print</span>
