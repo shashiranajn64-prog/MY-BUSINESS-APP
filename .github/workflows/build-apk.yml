@@ -28,17 +28,24 @@ jobs:
       - name: Build website
         run: npm run build
 
-      - name: Install Capacitor
-        run: npm install @capacitor/core @capacitor/cli @capacitor/android --legacy-peer-deps
+      - name: Install Capacitor 7
+        run: |
+          npm install @capacitor/core@7 @capacitor/cli@7 @capacitor/android@7 --legacy-peer-deps
 
-      - name: Setup Capacitor
+      - name: Create Capacitor config
         run: |
           rm -rf android
-          rm -f capacitor.config.json capacitor.config.ts
+          rm -f capacitor.config.ts capacitor.config.json
 
-          npx cap init "My Business App" com.mybusiness.app --web-dir=dist
+          cat > capacitor.config.json <<'EOF'
+          {
+            "appId": "com.mybusiness.app",
+            "appName": "My Business App",
+            "webDir": "dist"
+          }
+          EOF
 
-          cat capacitor.config.ts
+          cat capacitor.config.json
 
       - name: Add Android
         run: npx cap add android
