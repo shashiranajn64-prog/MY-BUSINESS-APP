@@ -38,7 +38,7 @@ jobs:
 
           npx cap init "My Business App" com.mybusiness.app --web-dir=dist
 
-          cat capacitor.config.json
+          cat capacitor.config.ts
 
       - name: Add Android
         run: npx cap add android
